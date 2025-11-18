@@ -1,6 +1,6 @@
-<center><strong><h1>DAS: Data Acquisition System</strong></h1></center>
+<h1 align="center"><strong>DAS: Data Acquisition System</strong></h1>
 
-<center>Enable embodied intelligence data acquisition to be as simple and natural as shooting a video.</center>
+<p align="center">Enable embodied intelligence data acquisition to be as simple and natural as shooting a video.</p>
 
 
 # 📋 Contents
