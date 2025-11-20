@@ -197,7 +197,7 @@ pip install -r requirements.txt
 ## Quick Start
 ### 1. decode mcap file demo
 ```shell
-python mcap_to_h5.py YOUR_MCAP_FILE_PATH
+python mcap_decoder.py YOUR_MCAP_FILE_PATH
 ```
 
 The purpose of the script is to parse the required topic data from the MCAP, the core code is as follows:
