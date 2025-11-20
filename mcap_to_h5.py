@@ -163,7 +163,8 @@ if __name__ == "__main__":
         
         output_path = args.out_path
         if not output_path:
-            output_path = osp.dirname(mcap_file)
+            mcap_dir = osp.dirname(mcap_file)
+            output_path = mcap_dir if mcap_dir else os.getcwd()
         os.makedirs(output_path, exist_ok=True)
         
         output_file = osp.join(output_path, osp.basename(mcap_file).replace(".mcap", ".h5"))
