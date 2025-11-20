@@ -1,0 +1,6 @@
+av==16.0.1
+h5py==3.14.0
+mcap==1.2.2
+mcap_protobuf_support==0.5.3
+numpy==1.26.4
+opencv_python==4.11.0.86
