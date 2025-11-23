@@ -4,7 +4,7 @@ import os
 from utils.mcaploader import McapLoader
 from utils.interpolate import get_inter_data
 from utils.h5_tools import write_array, write_img
-from utils.io import read_txt
+from utils.io import load_json
 import numpy as np
 import argparse
 
@@ -143,17 +143,18 @@ if __name__ == "__main__":
         assert task_dir != ""
         if (not osp.exists(task_dir)) or (not osp.isdir(task_dir)):
             raise FileNotFoundError
-        mcap_list_file = osp.join(task_dir, "success.txt")
+        mcap_list_file = osp.join(task_dir, "vio_result.json")
         if not osp.exists(mcap_list_file):
             raise FileNotFoundError
 
         output_path = osp.join(task_dir, "h5")
         os.makedirs(output_path, exist_ok=True)
 
-        mcap_list = read_txt(mcap_list_file)
+        mcap_info = load_json(mcap_list_file)
+        mcap_list = mcap_info.get("success_mcap_files", [])
         mcap_list = set(mcap_list)
         if len(mcap_list) == 0:
-            print(f"No mcap files need to be processed, the success.txt is empty")
+            print(f"No mcap files need to be processed, success_mcap_files is empty")
         for mcap_f in mcap_list:
             output_file = osp.join(output_path, osp.basename(mcap_f).replace(".mcap", ".h5"))
             process_list.append([mcap_f, output_file])

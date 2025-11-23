@@ -233,7 +233,7 @@ python mcap_to_h5.py --mcap-file YOUR_MCAP_FILE_PATH
 # Generate the H5 file in the given directory
 python mcap_to_h5.py --mcap-file YOUR_MCAP_FILE_PATH --out_path H5_FILE_PATH
 
-# Generate the H5 file in the matrix studio task directory
+# Generate the H5 file in the matrix studio task directory, all h5 files will be saved in the TASK_DIR/h5
 python mcap_to_h5.py --task-dir TASK_DIR_IN_MATRIX_STUDIO
 
 # Generate the H5 file in the matrix studio task directory, skip the generated h5 file in the task dir
