@@ -3,8 +3,10 @@ import numpy as np
 from typing import Optional, Callable
 from fractions import Fraction
 import io
-import cv2
+import re
 import pdb
+import huecodec
+
 
 # pyav doc
 # https://pyav.basswood-io.com/docs/stable/api/video.html
@@ -22,6 +24,21 @@ class VideoDecoder:
             img = decoded_frame.to_ndarray(channel_last=True, format="bgr24")
             return img
         return None
+
+
+_HUE_Z_RE = re.compile(r"z_min_m=([^;]+);.*?z_max_m=([^;]+)", re.DOTALL)
+
+
+def parse_hue_z_range(fmt: str) -> tuple:
+    if not fmt:
+        return (0.1, 1.5)
+    m = _HUE_Z_RE.search(fmt.replace(" ", ""))
+    if not m:
+        return (0.1, 1.5)
+    try:
+        return (float(m.group(1)), float(m.group(2)))
+    except ValueError:
+        return (0.1, 1.5)
 
 def img_parser(data: list) -> list:
     if not isinstance(data, list):
@@ -51,6 +68,52 @@ def img_parser(data: list) -> list:
             else:
                 all_decode_data.append(decoded_data)
     
+    return all_decode_data
+
+
+def depth_img_parser(data: list) -> list:
+    """
+    Decode H264 depth stream frame-by-frame.
+    Output per-frame depth map with shape [H, W, 1], unit meter.
+    """
+    if huecodec is None:
+        raise ImportError(
+            "huecodec is required for depth H264 decoding. "
+            "Please install hue-depth-encoding package first."
+        )
+    if not isinstance(data, list):
+        assert ValueError("you should pass a list of item when decompressing image")
+    all_decode_data = []
+    video_decoder = VideoDecoder()
+    has_find_first_kf = False
+    for msg in data:
+        nal_bytes = msg.data
+        start_offset = 4 if nal_bytes.startswith(b"\x00\x00\x00\x01") else 3 if nal_bytes.startswith(b"\x00\x00\x01") else 0
+        nal_unit_type = nal_bytes[start_offset] & 0x1F
+        if nal_unit_type != 7 and (not has_find_first_kf):  # 关键帧
+            decoded_data = None
+        else:
+            has_find_first_kf = True
+            try:
+                decoded_data = video_decoder.decode_frame_container_v2(msg.data)
+            except Exception:
+                decoded_data = None
+
+        if decoded_data is None:
+            all_decode_data.append(None)
+            continue
+
+        try:
+            z_min, z_max = parse_hue_z_range(getattr(msg, "format", ""))
+            # decoded_data is BGR, convert to RGB without opencv dependency
+            rgb_data = decoded_data[:, :, ::-1].copy()
+            depth_data = huecodec.rgb2depth(rgb_data, (z_min, z_max), inv_depth=False)
+            depth_data = np.asarray(depth_data, dtype=np.float32)
+            if depth_data.ndim == 2:
+                depth_data = depth_data[..., None]
+            all_decode_data.append(depth_data)
+        except Exception:
+            all_decode_data.append(None)
     return all_decode_data
 
 def imu_parser(data: list) -> list:
