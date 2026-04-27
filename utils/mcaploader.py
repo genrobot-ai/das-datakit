@@ -5,8 +5,13 @@ from mcap.reader import make_reader, McapReader, NonSeekingReader
 from mcap.writer import Writer
 from mcap_protobuf.decoder import DecoderFactory
 from mcap_protobuf.writer import Writer
+try:
+    import cv2
+except Exception:
+    cv2 = None
 from .topic_parser import (
     img_parser,
+    depth_img_parser,
     imu_parser,
     tactile_parser,
     pose_parser,
@@ -59,6 +64,8 @@ PROTO_MAPPING = {
     "/robot0/sensor/camera3/compressed": CompressedImage,
     "/robot0/sensor/camera4/compressed": CompressedImage,
     "/robot0/sensor/camera5/compressed": CompressedImage,
+    "/robot0/sensor/depth/compressed": CompressedImage,
+    "/robot0/sensor/depth/rectify_compressed": CompressedImage,
     "/robot0/sensor/camera3/camera_info": CameraCalibration,
     "/robot0/sensor/camera4/camera_info": CameraCalibration,
     "/robot0/sensor/camera5/camera_info": CameraCalibration,
@@ -84,6 +91,12 @@ def parse_topic_data(reader: McapReader, topic: str):
     return topic_msgs
 
 class McapLoader:
+    DEFAULT_STEREO_CALIBRATION_TOPIC = "/robot0/sensor/depth/stereo_calibration"
+
+    TOPIC_AUTO_DECOMPRESS_MAP = {
+        "/robot0/sensor/depth/compressed": depth_img_parser,
+    }
+
     AUTO_DECOMPRESS_MAP = {
         "CompressedImage": img_parser,
         "CompressedVideo": img_parser,
@@ -105,6 +118,7 @@ class McapLoader:
         self.topic_sync_info = defaultdict(dict)
         self.seq2idx = defaultdict(dict)
         self.sync_graph = RelationGraph()
+        self._stereo_calibration_cache = {}
 
     def init_reader(self):
         self._stream = io.BytesIO(open(self._bag_path, "rb").read())
@@ -276,7 +290,7 @@ class McapLoader:
             # auto decompress
             if auto_decompress:
                 try:
-                    topic_msgs = self._auto_decompress(topic_msgs)
+                    topic_msgs = self._auto_decompress(topic_msgs, topic_name=topic_name)
                 except Exception as e:
                     print(f"auto decompress failed for topic {topic_name}: {e}")
 
@@ -292,8 +306,10 @@ class McapLoader:
             self.sync_graph.deduce_relations()
         self._bag_data.update(bag_data)
         
-    def _auto_decompress(self, topic_data: list):
+    def _auto_decompress(self, topic_data: list, topic_name: str = ""):
         def match_func(proto_desc):
+            if topic_name in self.TOPIC_AUTO_DECOMPRESS_MAP:
+                return self.TOPIC_AUTO_DECOMPRESS_MAP[topic_name]
             for k, v in self.AUTO_DECOMPRESS_MAP.items():
                 if k in proto_desc:
                     return v
@@ -323,6 +339,136 @@ class McapLoader:
         if topic_name not in self._bag_data:
             return None
         return self._bag_data[topic_name]
+
+    def get_stereo_calibration(self, topic_name: str = DEFAULT_STEREO_CALIBRATION_TOPIC):
+        if topic_name in self._stereo_calibration_cache:
+            return self._stereo_calibration_cache[topic_name]
+        if topic_name not in self.all_topic_names:
+            self._stereo_calibration_cache[topic_name] = None
+            return None
+
+        last_msg = None
+        with open(self._bag_path, "rb") as f:
+            reader = make_reader(f, decoder_factories=[DecoderFactory()])
+            for _schema, _channel, _message, decoded in reader.iter_decoded_messages(topics=[topic_name]):
+                last_msg = decoded
+        self._stereo_calibration_cache[topic_name] = last_msg
+        return last_msg
+
+    def get_stereo_calibration_K_and_size(self, topic_name: str = DEFAULT_STEREO_CALIBRATION_TOPIC):
+        stereo_cal = self.get_stereo_calibration(topic_name)
+        if stereo_cal is None:
+            raise ValueError(f"No StereoCalibration message in bag for topic {topic_name}.")
+        k_list = list(getattr(stereo_cal, "K", []) or [])
+        if len(k_list) != 9:
+            raise ValueError(f"StereoCalibration.K has length {len(k_list)}, expected 9.")
+        K = np.asarray(k_list, dtype=np.float64).reshape(3, 3)
+        w = int(getattr(stereo_cal, "width", 0) or 0)
+        h = int(getattr(stereo_cal, "height", 0) or 0)
+        if w <= 0 or h <= 0:
+            raise ValueError("StereoCalibration width/height invalid.")
+        return K, w, h
+
+    @staticmethod
+    def depth_to_point_cloud(
+        depth_data: np.ndarray,
+        K: np.ndarray,
+        min_depth: float = 0.0,
+        max_depth: float = -1.0,
+        pixel_stride: int = 1,
+    ) -> np.ndarray:
+        """
+        Convert one depth frame to point cloud in camera coordinate.
+
+        Args:
+            depth_data (np.ndarray): [H, W] or [H, W, 1], unit meter.
+            K (np.ndarray): Camera intrinsic matrix (3x3).
+            min_depth (float): Keep points with depth > min_depth.
+            max_depth (float): Keep points with depth < max_depth, <=0 means disable.
+            pixel_stride (int): Point cloud stride, 1 means full resolution.
+
+        Returns:
+            np.ndarray: [N, 3], xyz in camera coordinate.
+        """
+        if depth_data is None:
+            return np.empty((0, 3), dtype=np.float32)
+        if not isinstance(depth_data, np.ndarray):
+            depth_data = np.asarray(depth_data)
+        if depth_data.ndim == 3:
+            if depth_data.shape[-1] != 1:
+                raise ValueError(f"depth_data last dim should be 1, got {depth_data.shape}")
+            depth_data = depth_data[..., 0]
+        if depth_data.ndim != 2:
+            raise ValueError(f"depth_data should be [H, W] or [H, W, 1], got {depth_data.shape}")
+        K = np.asarray(K, dtype=np.float64)
+        if K.shape != (3, 3):
+            raise ValueError(f"K shape should be (3, 3), got {K.shape}")
+
+        stride = max(1, int(pixel_stride))
+        z = np.asarray(depth_data[::stride, ::stride], dtype=np.float64)
+        valid = np.isfinite(z) & (z > float(min_depth))
+        if max_depth is not None and max_depth > 0:
+            valid &= z < float(max_depth)
+        vv, uu = np.where(valid)
+        if len(vv) == 0:
+            return np.empty((0, 3), dtype=np.float32)
+
+        zv = z[vv, uu]
+        fx, fy = float(K[0, 0]), float(K[1, 1])
+        cx, cy = float(K[0, 2]), float(K[1, 2])
+
+        # Strided pixel coordinates map back to original image space.
+        uu_full = uu.astype(np.float64) * float(stride)
+        vv_full = vv.astype(np.float64) * float(stride)
+        xv = (uu_full - cx) * zv / fx
+        yv = (vv_full - cy) * zv / fy
+        points = np.column_stack((xv, yv, zv)).astype(np.float32)
+        return points
+
+    def convert_depth_to_point_cloud(
+        self,
+        depth_data: np.ndarray,
+        min_depth: float = 0.0,
+        max_depth: float = -1.0,
+        pixel_stride: int = 1,
+        stereo_calibration_topic: str = DEFAULT_STEREO_CALIBRATION_TOPIC,
+    ) -> np.ndarray:
+        """
+        Convert one depth frame to point cloud with StereoCalibration intrinsics.
+
+        Args:
+            depth_data (np.ndarray): [H, W] or [H, W, 1] depth map in meters.
+            min_depth (float): Keep points with depth > min_depth.
+            max_depth (float): Keep points with depth < max_depth, <=0 means disable.
+            pixel_stride (int): Point cloud stride, 1 means full resolution.
+            stereo_calibration_topic (str): Topic to load StereoCalibration(K/width/height).
+
+        Returns:
+            np.ndarray: [N, 3], xyz in camera coordinate.
+        """
+        K, cal_w, cal_h = self.get_stereo_calibration_K_and_size(stereo_calibration_topic)
+        if depth_data is None:
+            return np.empty((0, 3), dtype=np.float32)
+
+        if depth_data.ndim == 3:
+            depth_hw = depth_data[..., 0]
+        else:
+            depth_hw = depth_data
+        if depth_hw.shape[:2] != (cal_h, cal_w):
+            if cv2 is None:
+                raise ImportError(
+                    "opencv-python is required when depth resolution differs from StereoCalibration size."
+                )
+            depth_hw = cv2.resize(depth_hw, (cal_w, cal_h), interpolation=cv2.INTER_NEAREST)
+            depth_data = depth_hw[..., None]
+
+        return self.depth_to_point_cloud(
+            depth_data=depth_data,
+            K=K,
+            min_depth=min_depth,
+            max_depth=max_depth,
+            pixel_stride=pixel_stride,
+        )
 
     # Get a frame of data for a topic based on seq num
     def get_topic_data_by_seq_num(self, topic_name, seq_id, sync_topics=[]):

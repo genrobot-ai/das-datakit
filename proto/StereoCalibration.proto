@@ -1,0 +1,49 @@
+// Stereo rectification parameters + base pose, aligned with foxglove CameraCalibration conventions.
+// See CameraCalibration.proto for K/R/P semantics.
+
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+import "header.proto";
+
+package foxglove;
+
+// Rectified stereo pair: left/right share the same conventions as CameraCalibration.
+message StereoCalibration {
+  // Timestamp of calibration data
+  google.protobuf.Timestamp timestamp = 1;
+
+  // Indices into the robot camera enumeration (from stereo_info JSON: left_idx, right_idx)
+  fixed32 left_camera_idx = 2;
+  fixed32 right_camera_idx = 3;
+
+  // Image size for the rectified maps at the encoded resolution
+  fixed32 width = 4;
+  fixed32 height = 5;
+
+  string left_frame_id = 6;
+  string right_frame_id = 7;
+
+  repeated double K = 8;  // length 9
+
+  // Left camera (rectified): intrinsics 3x3 row-major
+  repeated double R_left = 9;   // length 9
+  repeated double P_left = 10;  // length 12
+
+  // Right camera (rectified)
+  repeated double R_right = 11; // length 9
+  repeated double P_right = 12; // length 12
+
+  // 4x4 row-major homogeneous transform from stereo_info
+  repeated double T = 13; // length 16
+
+  double baseline_m = 14;
+
+  // Left camera: transform from camera to base frame [tx ty tz qx qy qz qw]
+  repeated double T_b_c_left = 15; // length 7
+
+  arnold.common.proto.Header header = 16;
+
+  // Sequence counter for this calibration message (pipeline default: 1).
+  uint32 sequence_num = 17 [json_name = "sequenceNum"];
+}
