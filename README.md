@@ -21,7 +21,7 @@ For this purpose, the DAS dataset is constructed using data collected by the DAS
 
 A key feature of the DAS dataset is its data format and storage optimization. The entire dataset is stored in MCAP format files, a format well-suited for handling multi-sensor data streams in embedded and intelligent systems. Moreover, we adopt efficient compression methods during the data storage process, which significantly reduces the storage space occupied by individual data packets. This optimization not only facilitates convenient storage and management of the dataset but also enhances the efficiency of data transmission and loading, providing great convenience for researchers in data usage and algorithm training.
 
-About DAS product: [https://genrobot.ai/pages/das](https://genrobot.ai/pages/das)
+About DAS product: [genrobot.ai](https://www.genrobot.ai/)
 
 # 🧹 Data Collection
 
