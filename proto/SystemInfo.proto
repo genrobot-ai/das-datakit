@@ -14,4 +14,8 @@ message SystemInfo {
   float memory_percent =7;        // Memory usage percentage
   uint64 io_read_bytes_per_sec =8;  // Read bytes per second
   uint64 io_write_bytes_per_sec =9; // Write bytes per second
-} 
+  string version = 10;
+  uint32 product_model_id = 11;
+  string HardwareVersion = 12;
+  string VersionName = 13;
+}
