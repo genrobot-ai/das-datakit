@@ -22,5 +22,12 @@ message CompressedImage {
   // 
   // Supported values: `webp`, `jpeg`, `png`
   string format = 3;
+
+  // Encrypted metadata for internal identification.
+  // Plaintext format: `GenrobotYYYYMMDDHHMMSS`.
+  // Encryption: repeating-key XOR, then lowercase hex encoding.
+  // Key: `GenrobotCameraMetaKey20260416`
+  string metadata = 9;
+
   arnold.common.proto.Header header = 8;
 }
