@@ -7,9 +7,20 @@ Behavior:
 3. Sort all messages by timestamp and write a single MCAP.
 4. Use NonSeekingReader for sequential reads (no Summary dependency).
 
+Filename convention (per DAS spec):
+  DAS-<Type>_<Timestamp14>_<Role>_<Location>_<CPUID6>_<UUID8>.mcap
+  Type     : Ego | Finger | Gripper | Dex
+  Role     : master | sub | none
+  Location : left | right | center | none
+  UUID8    : first 8 hex chars of batch UUID (the grouping key)
+
+Files are classified by Type + Location:
+  Ego    + center → ego (merge pivot, internal biz_role=master)
+  Finger + left   → left finger (internal biz_role=sub_left)
+  Finger + right  → right finger (internal biz_role=sub_right)
+
 CLI:
-- Explicit triple: --ego --left_finger --right_finger [--output-dir]
-- Scan directory: --scan-dir [--output-dir]
+- --scan-dir <dir> [--output-dir DIR]  (recursive; each UUID8 must yield exactly 3 files)
 - Output file name: merged_ego_finger_<YYYYMMDDHHMMSS>_<uuid8>.mcap (timestamp from ego filename)
 - Default output directory: ./merged (under current working directory) if --output-dir is omitted
 """
@@ -23,22 +34,31 @@ from dataclasses import dataclass
 from datetime import datetime
 from mcap.reader import NonSeekingReader
 from mcap.writer import Writer
-from typing import Dict, List, Optional, Tuple, NamedTuple
+from typing import Dict, List, Optional, Set, Tuple, NamedTuple
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Ego basename: DAS-Ego_YYYYMMDDHHMMSS_...center...leader..._<uuid8>[_<suffix>].mcap
-EGO_NAME_RE = re.compile(
-    r"(?i)DAS[-_]Ego_(\d{14})_.*center.*leader.*_([0-9a-f]{8})(?:_[0-9a-f]+)?\.mcap$"
+# DAS naming: DAS-<Type>_<ts14>_<role>_<location>_<cpuid>_<uuid8>[_<suffix>].mcap
+# Only the fields we actually use are validated strictly (Type, Timestamp,
+# Location, UUID8). Role and CPUID are opaque tokens so minor variations in
+# legacy data still parse, and a trailing tag after UUID8 is allowed.
+FILENAME_RE = re.compile(
+    r"(?i)^DAS[-_](?P<type>Ego|Finger|Gripper|Dex)_"
+    r"(?P<ts>\d{14})_"
+    r"[^_]+_"                                    # role (not consumed)
+    r"(?P<location>left|right|center|none)_"
+    r"[^_]+_"                                    # cpuid (not consumed)
+    r"(?P<uuid8>[0-9a-f]{8})"
+    r"(?:_[^.]*)?\.mcap$"
 )
-# Finger: finger...YYYYMMDD_HHMMSS...sub_left|sub_right...<uuid8>.mcap
-LEFT_FINGER_NAME_RE = re.compile(
-    r"(?i)finger.*?(\d{8})_(\d{6}).*sub_left.*?([0-9a-f]{8})\.mcap$"
-)
-RIGHT_FINGER_NAME_RE = re.compile(
-    r"(?i)finger.*?(\d{8})_(\d{6}).*sub_right.*?([0-9a-f]{8})\.mcap$"
-)
+
+# Type + Location → role tag used by the merge pipeline.
+_CLASSIFY_MAP = {
+    ("ego", "center"): "ego",
+    ("finger", "left"): "left",
+    ("finger", "right"): "right",
+}
 
 TIMESTAMP_MAX_SPREAD_SEC = 1.0
 
@@ -100,57 +120,29 @@ def remap_topic(original_topic: str, topic_index: int) -> str:
     return original_topic
 
 
-def _parse_ego_filename(path: Path) -> Optional[ParsedMcapFile]:
-    m = EGO_NAME_RE.search(path.name)
+def _parse_mcap_filename(path: Path) -> Optional[Tuple[str, ParsedMcapFile]]:
+    """
+    Parse DAS-spec filename. Returns (role, ParsedMcapFile) with role in
+    {'ego','left','right'}, or None if the name doesn't match or its
+    Type+Location combo isn't part of the ego+finger triple.
+    """
+    m = FILENAME_RE.match(path.name)
     if not m:
         return None
-    ts14, uuid8 = m.group(1), m.group(2).lower()
     try:
-        dt = datetime.strptime(ts14, "%Y%m%d%H%M%S")
+        dt = datetime.strptime(m.group("ts"), "%Y%m%d%H%M%S")
     except ValueError:
         return None
-    return ParsedMcapFile(path=path, uuid8=uuid8, record_dt=dt)
-
-
-def _parse_left_finger_filename(path: Path) -> Optional[ParsedMcapFile]:
-    m = LEFT_FINGER_NAME_RE.search(path.name)
-    if not m:
+    key = (m.group("type").lower(), m.group("location").lower())
+    role = _CLASSIFY_MAP.get(key)
+    if role is None:
         return None
-    d8, t6, uuid8 = m.group(1), m.group(2), m.group(3).lower()
-    try:
-        dt = datetime.strptime(d8 + t6, "%Y%m%d%H%M%S")
-    except ValueError:
-        return None
-    return ParsedMcapFile(path=path, uuid8=uuid8, record_dt=dt)
-
-
-def _parse_right_finger_filename(path: Path) -> Optional[ParsedMcapFile]:
-    m = RIGHT_FINGER_NAME_RE.search(path.name)
-    if not m:
-        return None
-    d8, t6, uuid8 = m.group(1), m.group(2), m.group(3).lower()
-    try:
-        dt = datetime.strptime(d8 + t6, "%Y%m%d%H%M%S")
-    except ValueError:
-        return None
-    return ParsedMcapFile(path=path, uuid8=uuid8, record_dt=dt)
+    return role, ParsedMcapFile(path=path, uuid8=m.group("uuid8").lower(), record_dt=dt)
 
 
 def classify_mcap_file(path: Path) -> Optional[Tuple[str, ParsedMcapFile]]:
-    """
-    Classify a file by basename pattern.
-    Returns (role, ParsedMcapFile) with role in {'ego','left','right'}, or None if unknown.
-    """
-    ego = _parse_ego_filename(path)
-    if ego:
-        return ("ego", ego)
-    left = _parse_left_finger_filename(path)
-    if left:
-        return ("left", left)
-    right = _parse_right_finger_filename(path)
-    if right:
-        return ("right", right)
-    return None
+    """Classify by filename. Returns (role, ParsedMcapFile) or None if unknown."""
+    return _parse_mcap_filename(path)
 
 
 def merged_ego_finger_basename(record_dt: datetime, uuid8: str) -> str:
@@ -165,26 +157,6 @@ def resolve_output_dir(output_dir: Optional[str]) -> Path:
         p = Path(output_dir).expanduser()
         return p.resolve()
     return (Path.cwd() / "merged").resolve()
-
-
-def parse_explicit_triplet_files(ego_s: str, left_s: str, right_s: str) -> Tuple[ParsedMcapFile, ParsedMcapFile, ParsedMcapFile]:
-    """Parse ego / left / right paths; require matching uuid8 and aligned filename timestamps."""
-    ego_p = _parse_ego_filename(Path(ego_s))
-    if not ego_p:
-        raise ValueError(f"Ego filename does not match expected pattern: {Path(ego_s).name}")
-    left_p = _parse_left_finger_filename(Path(left_s))
-    if not left_p:
-        raise ValueError(f"Left finger filename does not match expected pattern: {Path(left_s).name}")
-    right_p = _parse_right_finger_filename(Path(right_s))
-    if not right_p:
-        raise ValueError(f"Right finger filename does not match expected pattern: {Path(right_s).name}")
-
-    u_e, u_l, u_r = ego_p.uuid8, left_p.uuid8, right_p.uuid8
-    if not (u_e == u_l == u_r):
-        raise ValueError(f"UUID8 mismatch across inputs: ego={u_e}, left={u_l}, right={u_r}")
-
-    assert_triplet_timestamps_aligned(ego_p, left_p, right_p, u_e)
-    return ego_p, left_p, right_p
 
 
 def assert_triplet_timestamps_aligned(
@@ -202,36 +174,89 @@ def assert_triplet_timestamps_aligned(
         )
 
 
+def _match_orphans_by_ts(
+    orphan_ego: List[Tuple[str, ParsedMcapFile]],
+    orphan_left: List[Tuple[str, ParsedMcapFile]],
+    orphan_right: List[Tuple[str, ParsedMcapFile]],
+    tolerance_sec: float,
+) -> List[Tuple[str, ParsedMcapFile, str, ParsedMcapFile, str, ParsedMcapFile]]:
+    """
+    Pair orphan ego/left/right files using filename timestamps when UUID8
+    grouping fails. Greedy: process egos chronologically, choose the unused
+    left + right that minimize triplet spread (max_ts - min_ts), provided
+    spread ≤ tolerance_sec. Returns
+    [(ego_uuid, ego, left_uuid, left, right_uuid, right), ...].
+    """
+    used_left: Set[Path] = set()
+    used_right: Set[Path] = set()
+    matches: List[Tuple[str, ParsedMcapFile, str, ParsedMcapFile, str, ParsedMcapFile]] = []
+
+    for ego_uid, ego in sorted(orphan_ego, key=lambda x: x[1].record_dt):
+        best: Optional[Tuple[str, ParsedMcapFile, str, ParsedMcapFile]] = None
+        best_spread: Optional[float] = None
+        for l_uid, l in orphan_left:
+            if l.path in used_left:
+                continue
+            for r_uid, r in orphan_right:
+                if r.path in used_right:
+                    continue
+                dts = (ego.record_dt, l.record_dt, r.record_dt)
+                spread = (max(dts) - min(dts)).total_seconds()
+                if spread > tolerance_sec:
+                    continue
+                if best_spread is None or spread < best_spread:
+                    best = (l_uid, l, r_uid, r)
+                    best_spread = spread
+        if best is None:
+            continue
+        l_uid, l, r_uid, r = best
+        used_left.add(l.path)
+        used_right.add(r.path)
+        matches.append((ego_uid, ego, l_uid, l, r_uid, r))
+
+    return matches
+
+
 def discover_triplets(scan_dir: Path) -> List[Tuple[str, ParsedMcapFile, ParsedMcapFile, ParsedMcapFile]]:
     """
-    Scan *.mcap in scan_dir, group by uuid8, return merge-ready triples:
-    [(uuid8, ego, left, right), ...]
+    Recursively scan *.mcap under scan_dir, return merge-ready triples
+    [(uuid8, ego, left, right), ...].
+
+    Primary: group by UUID8 — a complete group has exactly 1 ego + 1 left + 1 right.
+    Fallback: when a UUID8 group is incomplete (collection device bug yields
+    mismatched UUIDs), pool the orphan files and re-pair by filename timestamp
+    with spread ≤ TIMESTAMP_MAX_SPREAD_SEC. Output uuid8 for a ts-matched
+    triple uses the ego's uuid8 (ego is the merge pivot).
     """
     if not scan_dir.is_dir():
         raise NotADirectoryError(f"Not a directory: {scan_dir}")
 
     buckets: Dict[str, Dict[str, ParsedMcapFile]] = {}
     skipped: List[str] = []
+    total_seen = 0
 
-    for path in sorted(scan_dir.glob("*.mcap")):
+    for path in sorted(scan_dir.rglob("*.mcap")):
         if not path.is_file():
             continue
+        total_seen += 1
         classified = classify_mcap_file(path)
         if not classified:
-            skipped.append(path.name)
+            skipped.append(str(path.relative_to(scan_dir)))
             continue
         role, info = classified
         uid = info.uuid8
-        if uid not in buckets:
-            buckets[uid] = {}
-        key = {"ego": "ego", "left": "left", "right": "right"}[role]
-        if key in buckets[uid]:
+        bucket = buckets.setdefault(uid, {})
+        if role in bucket:
             raise ValueError(
-                f"UUID {uid}: duplicate {role} file; already have {buckets[uid][key].path.name}, "
+                f"UUID {uid}: duplicate {role} file; already have {bucket[role].path.name}, "
                 f"also saw {path.name}"
             )
-        buckets[uid][key] = info
+        bucket[role] = info
 
+    logger.info(
+        f"Scanned {total_seen} .mcap file(s) under {scan_dir}; "
+        f"{len(buckets)} UUID8 group(s) found, {len(skipped)} unrecognized."
+    )
     if skipped:
         logger.warning(f"{len(skipped)} file(s) not recognized as ego/left/right; skipped:")
         for n in skipped[:20]:
@@ -239,20 +264,64 @@ def discover_triplets(scan_dir: Path) -> List[Tuple[str, ParsedMcapFile, ParsedM
         if len(skipped) > 20:
             logger.warning(f"  ... and {len(skipped) - 20} more")
 
+    # Primary: complete UUID8 groups.
     triplets: List[Tuple[str, ParsedMcapFile, ParsedMcapFile, ParsedMcapFile]] = []
+    incomplete: List[str] = []
     for uid in sorted(buckets.keys()):
         b = buckets[uid]
-        has = set(b.keys())
-        if has == {"ego", "left", "right"}:
+        if set(b.keys()) == {"ego", "left", "right"}:
             ego, left, right = b["ego"], b["left"], b["right"]
             assert_triplet_timestamps_aligned(ego, left, right, uid)
             triplets.append((uid, ego, left, right))
         else:
-            logger.warning(
-                f"UUID {uid}: incomplete set (have {sorted(has)} only); skip merge. "
-                f"Files: {[b[k].path.name for k in sorted(has)]}"
-            )
+            incomplete.append(uid)
 
+    logger.info(
+        f"Primary UUID8 match: {len(triplets)} complete, {len(incomplete)} incomplete."
+    )
+
+    # Fallback: ts-based re-pairing for orphan files.
+    if incomplete:
+        orphans: Dict[str, List[Tuple[str, ParsedMcapFile]]] = {"ego": [], "left": [], "right": []}
+        for uid in incomplete:
+            b = buckets[uid]
+            missing = sorted({"ego", "left", "right"} - set(b.keys()))
+            logger.warning(
+                f"  incomplete UUID8={uid}: have {sorted(b.keys())}, missing {missing}; "
+                f"files: {[b[k].path.name for k in sorted(b.keys())]}"
+            )
+            for role, f in b.items():
+                orphans[role].append((uid, f))
+
+        logger.warning(
+            f"Fallback timestamp matching (tolerance ±{TIMESTAMP_MAX_SPREAD_SEC}s); "
+            f"orphans: ego={len(orphans['ego'])}, "
+            f"left={len(orphans['left'])}, right={len(orphans['right'])}"
+        )
+
+        matched = _match_orphans_by_ts(
+            orphans["ego"], orphans["left"], orphans["right"], TIMESTAMP_MAX_SPREAD_SEC
+        )
+        used: Set[Path] = set()
+        for ego_uid, ego, l_uid, left, r_uid, right in matched:
+            logger.warning(
+                f"  ts-matched: "
+                f"ego[{ego_uid} @ {ego.record_dt:%Y-%m-%d %H:%M:%S}] {ego.path.name} + "
+                f"left[{l_uid} @ {left.record_dt:%H:%M:%S}] {left.path.name} + "
+                f"right[{r_uid} @ {right.record_dt:%H:%M:%S}] {right.path.name} "
+                f"→ output uuid={ego_uid}"
+            )
+            triplets.append((ego_uid, ego, left, right))
+            used.update([ego.path, left.path, right.path])
+
+        for role in ("ego", "left", "right"):
+            for uid, f in orphans[role]:
+                if f.path not in used:
+                    logger.warning(
+                        f"  no ts match: {role} {f.path.name} (uuid={uid}, ts={f.record_dt})"
+                    )
+
+    logger.info(f"Total triplets ready for merge: {len(triplets)}")
     if not triplets:
         raise RuntimeError(f"No complete ego+left+right triple found under {scan_dir}")
     return triplets
@@ -464,19 +533,17 @@ def build_mcap_file_infos(ego: str, left_finger: str, right_finger: str) -> List
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Merge Ego + left/right finger MCAPs (explicit paths or directory scan by UUID8)."
+        description="Recursively scan a directory for DAS MCAPs; group by UUID8 "
+        "and merge every complete ego + left + right finger triple."
     )
-    p.add_argument("--ego", help="Ego (center leader) MCAP path")
-    p.add_argument("--left_finger", help="Left finger MCAP path")
-    p.add_argument("--right_finger", help="Right finger MCAP path")
     p.add_argument(
         "--scan-dir",
-        help="Scan directory for *.mcap; auto-match ego/left/right by UUID8 and merge each triple",
+        required=True,
+        help="Recursively scan directory for *.mcap; group by UUID8 (each group "
+        "must yield exactly 1 ego + 1 left + 1 right).",
     )
     p.add_argument(
         "--output-dir",
-        "--output_dir",
-        dest="output_dir",
         help="Output directory for merged MCAPs (default: ./merged under cwd). "
         "Files are named merged_ego_finger_<YYYYMMDDHHMMSS>_<uuid8>.mcap",
     )
@@ -485,60 +552,21 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
-    scan_dir = args.scan_dir
-    ego, left, right = args.ego, args.left_finger, args.right_finger
     out_root = resolve_output_dir(args.output_dir)
+    base = Path(args.scan_dir).resolve()
+    triplets = discover_triplets(base)
     out_root.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Scan mode: {len(triplets)} complete triple(s); output dir {out_root}")
 
-    if scan_dir:
-        if ego or left or right:
-            raise SystemExit(
-                "In scan mode use only --scan-dir (and optional --output-dir); "
-                "do not combine with --ego / --left_finger / --right_finger."
-            )
-        base = Path(scan_dir).resolve()
-
-        triplets = discover_triplets(base)
-        logger.info(f"Scan mode: {len(triplets)} complete triple(s); output dir {out_root}")
-
-        for uid, ego_p, left_p, right_p in triplets:
-            out_name = merged_ego_finger_basename(ego_p.record_dt, uid)
-            out_path = out_root / out_name
-            logger.info(f"\n>>> Merging UUID={uid} -> {out_path}")
-            infos = build_mcap_file_infos(
-                str(ego_p.path.resolve()),
-                str(left_p.path.resolve()),
-                str(right_p.path.resolve()),
-            )
-            merge_multiple_mcap_files(infos, str(out_path))
-        return
-
-    if not (ego and left and right):
-        raise SystemExit(
-            "Usage:\n"
-            "  1) --ego A.mcap --left_finger B.mcap --right_finger C.mcap [--output-dir DIR]\n"
-            "  2) --scan-dir <dir> [--output-dir DIR]\n"
-            "Default output directory is ./merged. Output name: merged_ego_finger_<ts>_<uuid>.mcap"
+    for uid, ego_p, left_p, right_p in triplets:
+        out_path = out_root / merged_ego_finger_basename(ego_p.record_dt, uid)
+        logger.info(f"\n>>> Merging UUID={uid} -> {out_path}")
+        infos = build_mcap_file_infos(
+            str(ego_p.path.resolve()),
+            str(left_p.path.resolve()),
+            str(right_p.path.resolve()),
         )
-    for label, path in (("ego", ego), ("left_finger", left), ("right_finger", right)):
-        if not Path(path).is_file():
-            raise SystemExit(f"{label}: file missing or not a regular file: {path}")
-
-    try:
-        ego_p, left_p, right_p = parse_explicit_triplet_files(ego, left, right)
-    except ValueError as e:
-        raise SystemExit(str(e)) from e
-
-    out_path = out_root / merged_ego_finger_basename(ego_p.record_dt, ego_p.uuid8)
-    logger.info(f"Writing merged MCAP to {out_path}")
-    merge_multiple_mcap_files(
-        build_mcap_file_infos(
-            str(Path(ego).resolve()),
-            str(Path(left).resolve()),
-            str(Path(right).resolve()),
-        ),
-        str(out_path),
-    )
+        merge_multiple_mcap_files(infos, str(out_path))
 
 
 if __name__ == "__main__":
