@@ -7,8 +7,8 @@ def parse_mcap(mcap_file):
     bag = McapLoader(mcap_file)
     print(bag.all_topic_names)
     print(bag)
-    # default load all topics
-    bag.load_topics(bag.all_topic_names, auto_sync=False)
+    # Because loading all topics requires a significant amount of memory, it is recommended to specify the list of specific topics to be loaded as needed.
+    # bag.load_topics(bag.all_topic_names, auto_sync=False)
 
     # decode images
     camera0_img_data = bag.get_topic_data("/robot0/sensor/camera0/compressed")
