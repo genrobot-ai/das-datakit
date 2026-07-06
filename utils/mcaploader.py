@@ -549,6 +549,7 @@ class McapLoader:
         min_ray_z: float = 0.1,
         max_range: float = -1.0,
         pixel_stride: int = 1,
+        return_pixel_indices: bool = False,
     ) -> np.ndarray:
         """
         Convert one depth frame to point cloud using Double Sphere camera model.
@@ -561,12 +562,17 @@ class McapLoader:
             min_ray_z (float): Keep points whose ray z > min_ray_z.
             max_range (float): Keep points within this range, <=0 means disable.
             pixel_stride (int): Point cloud stride, 1 means full resolution.
+            return_pixel_indices (bool): If True, also return original depth pixel rows/cols.
 
         Returns:
             np.ndarray: [N, 3], xyz in camera coordinate.
+            tuple: (points, yy, xx) when return_pixel_indices=True.
         """
         if depth_data is None:
-            return np.empty((0, 3), dtype=np.float32)
+            points = np.empty((0, 3), dtype=np.float32)
+            if return_pixel_indices:
+                return points, np.empty((0,), dtype=np.int64), np.empty((0,), dtype=np.int64)
+            return points
         if not isinstance(depth_data, np.ndarray):
             depth_data = np.asarray(depth_data)
         if depth_data.ndim == 3:
@@ -587,15 +593,25 @@ class McapLoader:
         )
         yy, xx = np.where(valid)
         if len(yy) == 0:
-            return np.empty((0, 3), dtype=np.float32)
+            points = np.empty((0, 3), dtype=np.float32)
+            if return_pixel_indices:
+                return points, np.empty((0,), dtype=np.int64), np.empty((0,), dtype=np.int64)
+            return points
 
         rv = rays[yy, xx]
         d = depth[yy, xx]
         pts = rv * (d / np.maximum(rv[:, 2], 1e-6))[:, None]
+        yy_full = yy.astype(np.int64) * stride
+        xx_full = xx.astype(np.int64) * stride
         if max_range is not None and max_range > 0:
             keep = np.linalg.norm(pts, axis=1) <= float(max_range)
             pts = pts[keep]
-        return pts.astype(np.float32)
+            yy_full = yy_full[keep]
+            xx_full = xx_full[keep]
+        points = pts.astype(np.float32)
+        if return_pixel_indices:
+            return points, yy_full, xx_full
+        return points
 
     def convert_camera2_depth_to_point_cloud(
         self,
@@ -604,6 +620,7 @@ class McapLoader:
         max_range: float = -1.0,
         pixel_stride: int = 1,
         depth_info_topic: str = CAMERA2_DEPTH_INFO_TOPIC,
+        return_pixel_indices: bool = False,
     ) -> np.ndarray:
         """
         Convert one camera2 depth frame to point cloud with DepthInfo intrinsics.
@@ -614,13 +631,18 @@ class McapLoader:
             max_range (float): Keep points within this range, <=0 means disable.
             pixel_stride (int): Point cloud stride, 1 means full resolution.
             depth_info_topic (str): Topic to load DepthInfo(K/xi/alpha/height/width).
+            return_pixel_indices (bool): If True, also return original depth pixel rows/cols.
 
         Returns:
             np.ndarray: [N, 3], xyz in camera coordinate.
+            tuple: (points, yy, xx) when return_pixel_indices=True.
         """
         K, xi, alpha, cal_h, cal_w = self.get_camera2_depth_info_K_xi_alpha(depth_info_topic)
         if depth_data is None:
-            return np.empty((0, 3), dtype=np.float32)
+            points = np.empty((0, 3), dtype=np.float32)
+            if return_pixel_indices:
+                return points, np.empty((0,), dtype=np.int64), np.empty((0,), dtype=np.int64)
+            return points
 
         if depth_data.ndim == 3:
             depth_hw = depth_data[..., 0]
@@ -642,6 +664,7 @@ class McapLoader:
             min_ray_z=min_ray_z,
             max_range=max_range,
             pixel_stride=pixel_stride,
+            return_pixel_indices=return_pixel_indices,
         )
 
     # Get a frame of data for a topic based on seq num
