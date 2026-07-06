@@ -1,11 +1,17 @@
 import av
 import numpy as np
+import struct
 from typing import Optional, Callable
 from fractions import Fraction
 import io
 import re
 import pdb
 import huecodec
+
+try:
+    import zstandard as zstd
+except ImportError:
+    zstd = None
 
 
 # pyav doc
@@ -109,6 +115,80 @@ def depth_img_parser(data: list) -> list:
             rgb_data = decoded_data[:, :, ::-1].copy()
             depth_data = huecodec.rgb2depth(rgb_data, (z_min, z_max), inv_depth=False)
             depth_data = np.asarray(depth_data, dtype=np.float32)
+            if depth_data.ndim == 2:
+                depth_data = depth_data[..., None]
+            all_decode_data.append(depth_data)
+        except Exception:
+            all_decode_data.append(None)
+    return all_decode_data
+
+
+def _get_u32(data: bytes, off: int) -> tuple:
+    return struct.unpack_from("<I", data, off)[0], off + 4
+
+
+def _get_varint(data: bytes, off: int) -> tuple:
+    value = 0
+    shift = 0
+    while off < len(data):
+        b = data[off]
+        off += 1
+        value |= (b & 0x7F) << shift
+        if not (b & 0x80):
+            return value, off
+        shift += 7
+    raise ValueError("truncated varint")
+
+
+def _zigzag_decode(v: int) -> int:
+    return -((v + 1) >> 1) if (v & 1) else (v >> 1)
+
+
+def _spatial_pred(recon: np.ndarray, y: int, x: int) -> int:
+    left = int(recon[y, x - 1]) if x > 0 else 0
+    up = int(recon[y - 1, x]) if y > 0 else 0
+    up_left = int(recon[y - 1, x - 1]) if (x > 0 and y > 0) else 0
+    return (left + up - up_left) & 0xFFFF
+
+
+def decode_predz_i_frame(frame_payload_zst: bytes, shape: tuple) -> np.ndarray:
+    """Decode one PredZ+zstd depth frame to uint16 buffer (float16 bits)."""
+    if zstd is None:
+        raise ImportError("zstandard is required for PredZ depth decoding.")
+    data = zstd.ZstdDecompressor().decompress(frame_payload_zst)
+    h, w = shape
+    off = 0
+    mode_bytes_expected = (h * w + 7) // 8
+    mode_bytes, off = _get_u32(data, off)
+    size, off = _get_u32(data, off)
+    frame_end = off + size
+    if mode_bytes != mode_bytes_expected:
+        raise ValueError("unexpected mode byte count")
+    off += mode_bytes
+    recon = np.empty((h, w), dtype=np.uint16)
+    for y in range(h):
+        for x in range(w):
+            zz, off = _get_varint(data, off)
+            pred = _spatial_pred(recon, y, x)
+            recon[y, x] = (pred + _zigzag_decode(zz)) & 0xFFFF
+    if off != frame_end:
+        raise ValueError("frame payload size mismatch")
+    return recon
+
+
+def predz_depth_img_parser(data: list, shape: tuple) -> list:
+    """
+    Decode PredZ+zstd depth payloads frame-by-frame.
+    Output per-frame depth map with shape [H, W, 1], unit meter.
+    """
+    if not isinstance(data, list):
+        raise ValueError("you should pass a list of item when decompressing depth")
+    h, w = shape
+    all_decode_data = []
+    for msg in data:
+        try:
+            recon = decode_predz_i_frame(bytes(msg.data), (h, w))
+            depth_data = recon.view(np.float16).astype(np.float32)
             if depth_data.ndim == 2:
                 depth_data = depth_data[..., None]
             all_decode_data.append(depth_data)

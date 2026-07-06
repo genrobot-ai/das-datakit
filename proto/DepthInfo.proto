@@ -1,0 +1,41 @@
+// Depth codec metadata for compressed camera depth streams.
+// Describes how to decode /robot0/sensor/camera{N}/depth payloads.
+
+syntax = "proto3";
+
+import "header.proto";
+
+package foxglove;
+
+message DepthInfo {
+  // Topic carrying per-frame compressed depth payloads.
+  string depth_topic = 1;
+
+  // Decoded depth image size.
+  uint32 height = 2;
+  uint32 width = 3;
+
+  // Number of compressed depth frames.
+  uint32 count = 4;
+
+  // Per-frame timestamps, nanoseconds, aligned with depth_topic messages.
+  repeated uint64 timestamps = 5;
+
+  // Effective camera intrinsics at the decoded depth resolution, 3x3 row-major.
+  repeated double K = 6; // length 9
+
+  // Double Sphere camera parameters.
+  double xi = 7;
+  double alpha = 8;
+
+  // Codec name, e.g. "float16_predz_i_frame_zstd".
+  string codec = 9;
+
+  // Decoded depth dtype, e.g. "float16".
+  string dtype = 10;
+
+  arnold.common.proto.Header header = 11;
+
+  // Sequence counter for this codec-info message (pipeline default: 1).
+  uint32 sequence_num = 12 [json_name = "sequenceNum"];
+}
