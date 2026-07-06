@@ -179,6 +179,24 @@ More details:
 - `max_range`: keep 3D points whose distance to the camera origin is `<= max_range` (meters). Set `<= 0` to disable the upper bound.
 - `pixel_stride` is used to subsample points when generating the point cloud.
 
+How to export camera2 depth to RGB PLY files
+
+```shell
+python scripts/export_depth_pointcloud_ply.py /path/to/file.mcap \
+    --depth-topic /robot0/sensor/camera2/depth \
+    --export-rgb-ply \
+    --rgb-topic /robot0/sensor/camera2/compressed \
+    --min-ray-z 0.1 \
+    --max-range 5.0
+```
+
+More details:
+
+- `--export-rgb-ply` enables RGB PLY output for camera2 depth.
+- RGB values are sampled from the original image topic specified by `--rgb-topic`, then resized to the depth resolution before indexing by the projected depth pixels.
+- `--rgb-match-threshold-ms` controls the maximum timestamp difference allowed when matching a depth frame to an RGB frame. The default is `50` ms.
+- `--rgb-crop-ratio` can optionally center-crop the RGB image before resizing. The default `1.0` uses the full original image.
+
 ### imu
 
 Related topics:
