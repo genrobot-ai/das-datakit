@@ -121,6 +121,64 @@ More details:
 - If depth resolution differs from calibration resolution, depth will be resized with nearest interpolation before projection.
 - `min_depth`, `max_depth`, and `pixel_stride` are used to filter/subsample points.
 
+### camera2 depth sensor data
+
+Related topics:
+
+```shell
+# PredZ+zstd encoded depth stream (float16)
+/robot0/sensor/camera2/depth
+# depth codec metadata (Double Sphere intrinsics)
+/robot0/sensor/camera2/depth_info
+```
+
+How to read
+
+```python
+bag = McapLoader(mcap_file)
+topic_data = bag.get_topic_data("/robot0/sensor/camera2/depth")
+print(topic_data[0]["decode_data"])
+"""
+[H, W, 1]: np.ndarray, depth map in meters (float32)
+"""
+```
+
+Notes:
+
+- `topic_data` is a list, each item is one frame dict.
+- Use `topic_data[i]["decode_data"]` to access the i-th depth frame.
+- `decode_data` shape is `[H, W, 1]`, dtype is `float32`, and the unit is meter.
+- Decoding requires `/robot0/sensor/camera2/depth_info` for image size metadata.
+
+How to convert camera2 depth to point cloud in camera coordinate
+
+```python
+bag = McapLoader(mcap_file)
+topic_data = bag.get_topic_data("/robot0/sensor/camera2/depth")
+depth_data = topic_data[0]["decode_data"]
+point_cloud = bag.convert_camera2_depth_to_point_cloud(
+    depth_data=depth_data,
+    min_ray_z=0.1,
+    max_range=5.0,
+    pixel_stride=1,
+    depth_info_topic="/robot0/sensor/camera2/depth_info",
+)
+print(point_cloud)
+"""
+[N, 3]: np.ndarray, xyz in camera coordinate
+"""
+```
+
+More details:
+
+- `convert_camera2_depth_to_point_cloud(...)` takes a single depth frame as input.
+- Intrinsics `K`, `xi`, and `alpha` are read automatically from `DepthInfo`.
+- Uses Double Sphere camera model instead of pinhole projection.
+- If depth resolution differs from `DepthInfo` size, depth will be resized with nearest interpolation before projection.
+- `min_ray_z`: keep pixels whose Double Sphere ray direction has `ray.z > min_ray_z`. This filters unstable edge pixels whose viewing direction is nearly parallel to the image plane.
+- `max_range`: keep 3D points whose distance to the camera origin is `<= max_range` (meters). Set `<= 0` to disable the upper bound.
+- `pixel_stride` is used to subsample points when generating the point cloud.
+
 ### imu
 
 Related topics:

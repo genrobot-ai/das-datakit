@@ -7,4 +7,5 @@ opencv_python==4.11.0.86
 protobuf==5.28.3
 pyarrow
 matplotlib
+zstandard
 huecodec @ git+https://github.com/cheind/hue-depth-encoding.git

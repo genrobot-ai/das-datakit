@@ -12,6 +12,7 @@ except Exception:
 from .topic_parser import (
     img_parser,
     depth_img_parser,
+    predz_depth_img_parser,
     imu_parser,
     tactile_parser,
     pose_parser,
@@ -28,6 +29,7 @@ from pb2.SystemInfo_pb2 import SystemInfo
 from pb2.TactileMeasurement_pb2 import TactileMeasurement
 from pb2.MagneticEncoder_pb2 import MagneticEncoderMeasurement
 from pb2.CompressedImage_pb2 import CompressedImage
+from pb2.DepthInfo_pb2 import DepthInfo
 from pb2.PoseInFrame_pb2 import PoseInFrame
 from pb2.RobotInfo_pb2 import RobotInfo
 import pdb
@@ -36,6 +38,8 @@ PROTO_MAPPING = {
     "/robot0/sensor/camera0/compressed": CompressedImage,
     "/robot0/sensor/camera1/compressed": CompressedImage,
     "/robot0/sensor/camera2/compressed": CompressedImage,
+    "/robot0/sensor/camera2/depth": CompressedImage,
+    "/robot0/sensor/camera2/depth_info": DepthInfo,
     "/robot0/sensor/imu": IMUMeasurement,
     "/robot0/sensor/camera0/camera_info": CameraCalibration,
     "/robot0/sensor/camera1/camera_info": CameraCalibration,
@@ -92,9 +96,12 @@ def parse_topic_data(reader: McapReader, topic: str):
 
 class McapLoader:
     DEFAULT_STEREO_CALIBRATION_TOPIC = "/robot0/sensor/depth/stereo_calibration"
+    CAMERA2_DEPTH_TOPIC = "/robot0/sensor/camera2/depth"
+    CAMERA2_DEPTH_INFO_TOPIC = "/robot0/sensor/camera2/depth_info"
 
     TOPIC_AUTO_DECOMPRESS_MAP = {
         "/robot0/sensor/depth/compressed": depth_img_parser,
+        "/robot0/sensor/camera2/depth": predz_depth_img_parser,
     }
 
     AUTO_DECOMPRESS_MAP = {
@@ -119,6 +126,7 @@ class McapLoader:
         self.seq2idx = defaultdict(dict)
         self.sync_graph = RelationGraph()
         self._stereo_calibration_cache = {}
+        self._camera2_depth_info_cache = None
 
     def init_reader(self):
         self._stream = io.BytesIO(open(self._bag_path, "rb").read())
@@ -319,7 +327,16 @@ class McapLoader:
             proto_desc = proto_data[0].DESCRIPTOR.name
             func = match_func(proto_desc)
             if func is not None:
-                decompressed_data = func(proto_data)
+                if topic_name == self.CAMERA2_DEPTH_TOPIC:
+                    depth_info = self.get_camera2_depth_info()
+                    if depth_info is None:
+                        raise ValueError(
+                            f"missing {self.CAMERA2_DEPTH_INFO_TOPIC} required to decode camera2 depth"
+                        )
+                    shape = (int(depth_info.height), int(depth_info.width))
+                    decompressed_data = func(proto_data, shape)
+                else:
+                    decompressed_data = func(proto_data)
                 for idx, d in enumerate(decompressed_data):
                     topic_data[idx]["decode_data"] = d
                 topic_data = [d for d in topic_data if d["decode_data"] is not None]
@@ -467,6 +484,163 @@ class McapLoader:
             K=K,
             min_depth=min_depth,
             max_depth=max_depth,
+            pixel_stride=pixel_stride,
+        )
+
+    def get_camera2_depth_info(self, topic_name: str = CAMERA2_DEPTH_INFO_TOPIC):
+        if self._camera2_depth_info_cache is not None:
+            return self._camera2_depth_info_cache
+        if topic_name not in self.all_topic_names:
+            self._camera2_depth_info_cache = None
+            return None
+
+        last_msg = None
+        with open(self._bag_path, "rb") as f:
+            reader = make_reader(f, decoder_factories=[DecoderFactory()])
+            for _schema, _channel, _message, decoded in reader.iter_decoded_messages(topics=[topic_name]):
+                last_msg = decoded
+        self._camera2_depth_info_cache = last_msg
+        return last_msg
+
+    def get_camera2_depth_info_K_xi_alpha(self, topic_name: str = CAMERA2_DEPTH_INFO_TOPIC):
+        depth_info = self.get_camera2_depth_info(topic_name)
+        if depth_info is None:
+            raise ValueError(f"No DepthInfo message in bag for topic {topic_name}.")
+        k_list = list(getattr(depth_info, "K", []) or [])
+        if len(k_list) != 9:
+            raise ValueError(f"DepthInfo.K has length {len(k_list)}, expected 9.")
+        K = np.asarray(k_list, dtype=np.float64).reshape(3, 3)
+        xi = float(getattr(depth_info, "xi", 0.0) or 0.0)
+        alpha = float(getattr(depth_info, "alpha", 0.0) or 0.0)
+        h = int(getattr(depth_info, "height", 0) or 0)
+        w = int(getattr(depth_info, "width", 0) or 0)
+        if h <= 0 or w <= 0:
+            raise ValueError("DepthInfo height/width invalid.")
+        return K, xi, alpha, h, w
+
+    @staticmethod
+    def double_sphere_rays(shape_hw: tuple, K: np.ndarray, xi: float, alpha: float) -> np.ndarray:
+        h, w = shape_hw
+        fx, fy = float(K[0, 0]), float(K[1, 1])
+        cx, cy = float(K[0, 2]), float(K[1, 2])
+        yy, xx = np.meshgrid(np.arange(h, dtype=np.float32), np.arange(w, dtype=np.float32), indexing="ij")
+        mx = (xx - cx) / fx
+        my = (yy - cy) / fy
+        r2 = mx * mx + my * my
+        sqrt_arg = 1.0 - (2.0 * alpha - 1.0) * r2
+        valid = sqrt_arg >= 0
+        sqrt_arg = np.maximum(sqrt_arg, 0.0)
+        mz = (1.0 - alpha * alpha * r2) / (alpha * np.sqrt(sqrt_arg) + (1.0 - alpha))
+        k_arg = mz * mz + (1.0 - xi * xi) * r2
+        valid &= k_arg >= 0
+        k_arg = np.maximum(k_arg, 0.0)
+        scale = (mz * xi + np.sqrt(k_arg)) / np.maximum(mz * mz + r2, 1e-12)
+        rays = np.stack([scale * mx, scale * my, scale * mz - xi], axis=-1).astype(np.float32)
+        rays /= np.maximum(np.linalg.norm(rays, axis=-1, keepdims=True), 1e-12)
+        rays[~valid] = np.nan
+        return rays
+
+    @staticmethod
+    def depth_to_point_cloud_double_sphere(
+        depth_data: np.ndarray,
+        K: np.ndarray,
+        xi: float,
+        alpha: float,
+        min_ray_z: float = 0.1,
+        max_range: float = -1.0,
+        pixel_stride: int = 1,
+    ) -> np.ndarray:
+        """
+        Convert one depth frame to point cloud using Double Sphere camera model.
+
+        Args:
+            depth_data (np.ndarray): [H, W] or [H, W, 1], unit meter.
+            K (np.ndarray): Camera intrinsic matrix (3x3).
+            xi (float): Double Sphere xi parameter.
+            alpha (float): Double Sphere alpha parameter.
+            min_ray_z (float): Keep points whose ray z > min_ray_z.
+            max_range (float): Keep points within this range, <=0 means disable.
+            pixel_stride (int): Point cloud stride, 1 means full resolution.
+
+        Returns:
+            np.ndarray: [N, 3], xyz in camera coordinate.
+        """
+        if depth_data is None:
+            return np.empty((0, 3), dtype=np.float32)
+        if not isinstance(depth_data, np.ndarray):
+            depth_data = np.asarray(depth_data)
+        if depth_data.ndim == 3:
+            if depth_data.shape[-1] != 1:
+                raise ValueError(f"depth_data last dim should be 1, got {depth_data.shape}")
+            depth_data = depth_data[..., 0]
+        if depth_data.ndim != 2:
+            raise ValueError(f"depth_data should be [H, W] or [H, W, 1], got {depth_data.shape}")
+
+        stride = max(1, int(pixel_stride))
+        depth = np.asarray(depth_data[::stride, ::stride], dtype=np.float32)
+        rays = McapLoader.double_sphere_rays(depth.shape, K, xi, alpha)
+        valid = (
+            np.isfinite(depth)
+            & (depth > 0)
+            & np.isfinite(rays).all(axis=-1)
+            & (rays[..., 2] > float(min_ray_z))
+        )
+        yy, xx = np.where(valid)
+        if len(yy) == 0:
+            return np.empty((0, 3), dtype=np.float32)
+
+        rv = rays[yy, xx]
+        d = depth[yy, xx]
+        pts = rv * (d / np.maximum(rv[:, 2], 1e-6))[:, None]
+        if max_range is not None and max_range > 0:
+            keep = np.linalg.norm(pts, axis=1) <= float(max_range)
+            pts = pts[keep]
+        return pts.astype(np.float32)
+
+    def convert_camera2_depth_to_point_cloud(
+        self,
+        depth_data: np.ndarray,
+        min_ray_z: float = 0.1,
+        max_range: float = -1.0,
+        pixel_stride: int = 1,
+        depth_info_topic: str = CAMERA2_DEPTH_INFO_TOPIC,
+    ) -> np.ndarray:
+        """
+        Convert one camera2 depth frame to point cloud with DepthInfo intrinsics.
+
+        Args:
+            depth_data (np.ndarray): [H, W] or [H, W, 1] depth map in meters.
+            min_ray_z (float): Keep points whose ray z > min_ray_z.
+            max_range (float): Keep points within this range, <=0 means disable.
+            pixel_stride (int): Point cloud stride, 1 means full resolution.
+            depth_info_topic (str): Topic to load DepthInfo(K/xi/alpha/height/width).
+
+        Returns:
+            np.ndarray: [N, 3], xyz in camera coordinate.
+        """
+        K, xi, alpha, cal_h, cal_w = self.get_camera2_depth_info_K_xi_alpha(depth_info_topic)
+        if depth_data is None:
+            return np.empty((0, 3), dtype=np.float32)
+
+        if depth_data.ndim == 3:
+            depth_hw = depth_data[..., 0]
+        else:
+            depth_hw = depth_data
+        if depth_hw.shape[:2] != (cal_h, cal_w):
+            if cv2 is None:
+                raise ImportError(
+                    "opencv-python is required when depth resolution differs from DepthInfo size."
+                )
+            depth_hw = cv2.resize(depth_hw, (cal_w, cal_h), interpolation=cv2.INTER_NEAREST)
+            depth_data = depth_hw[..., None]
+
+        return self.depth_to_point_cloud_double_sphere(
+            depth_data=depth_data,
+            K=K,
+            xi=xi,
+            alpha=alpha,
+            min_ray_z=min_ray_z,
+            max_range=max_range,
             pixel_stride=pixel_stride,
         )
 
