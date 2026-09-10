@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+import "header.proto";
+package foxglove;
+
+/** 子任务（最小动作单元，含执行成功标记 is_success） */
+message SubSegmentsInfo {
+  string segment_id = 1;
+  double start_time_s = 2;
+  double end_time_s = 3;
+  string fine_label = 4;
+  int32 start_frame = 5;
+  int32 end_frame = 6;
+  bool is_success = 7;
+  /** 子任务详细描述（与 fine_label 同级；可配置字段；旧数据缺失按空串） */
+  string fine_label_detail = 8;
+}
+
+/**
+ * 父任务（Task）。
+ * - 普通模式：内嵌一个或多个子任务 sub_segments_info；
+ * - Task 模式（只标父任务）：sub_segments_info 为空，仅保留任务区间与 fine_label。
+ * 注意：父任务不含 is_success（成功与否只在子任务层表达）。
+ */
+message SegmentsInfo {
+  string segment_id = 1;
+  double start_time_s = 2;
+  double end_time_s = 3;
+  string fine_label = 4;
+  int32 start_frame = 5;
+  int32 end_frame = 6;
+  repeated SubSegmentsInfo sub_segments_info = 7;
+  /** 场景（per-segment 自由文本，标注员填中文，搭翻译链路自动中→英；非必填，旧 JSON 缺失按缺失处理） */
+  string scene = 8;
+  /** 场景详细描述（per-segment 自由文本，标注员填中文→翻译；与 scene 字段并存；非必填） */
+  string scene_description = 9;
+}
+
+message VideoAnnotationV2 {
+  string video_id = 1;
+  string bold_mark = 2;
+  /** 场景技能树节点路径（与标注 JSON 字段 sst 一致） */
+  string sst = 3;
+  /** 父子两层任务结构：每个父任务内嵌其子任务 */
+  repeated SegmentsInfo segments_info = 4;
+  arnold.common.proto.Header header = 5;
+  /** 环境描述（顶层全局，标注员看视频描述环境；填中文→翻译；非必填） */
+  string environment_description = 6;
+}

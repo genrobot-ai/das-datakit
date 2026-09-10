@@ -25,4 +25,10 @@ message PoseInFrame {
   foxglove.Vector3 angular_vel = 5;
 
   arnold.common.proto.Header header = 6;
+
+  // Whether the pose in this frame is valid
+  bool pose_valid = 7;
+
+
+  float score = 8;
 }

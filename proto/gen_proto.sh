@@ -24,12 +24,11 @@ modify_proto_imports() {
 }
 
 
-OUTPUT_DIR="proto_gen"  
+OUTPUT_DIR="proto_gen"
 
 
 rm  "$OUTPUT_DIR" -rf
 mkdir -p "$OUTPUT_DIR"
 
 
-npx pbjs -t static-module -w es6 -o $OUTPUT_DIR/topic.js *.proto
-
+npx pbjs -t static-module -w es6 -o "$OUTPUT_DIR/topic.js" *.proto

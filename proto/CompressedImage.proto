@@ -29,5 +29,23 @@ message CompressedImage {
   // Key: `GenrobotCameraMetaKey20260416`
   string metadata = 9;
 
+  // Exposure time of the frame in seconds (from ISP AE).
+  float integration_time = 10;
+
+  // Analog gain of the frame (from ISP AE).
+  float analog_gain = 11;
+
+  // Aperture (f-number). Fixed value 2.0 for current hardware.
+  float aperture = 12;
+
+  // White balance red gain (from ISP AWB).
+  float wb_rgain = 13;
+
+  // White balance blue gain (from ISP AWB).
+  float wb_bgain = 14;
+
+  // White balance color temperature in Kelvin (from ISP AWB).
+  uint32 wb_ct = 15;
+
   arnold.common.proto.Header header = 8;
 }

@@ -50,10 +50,27 @@ message MPCData {
   double timestamp = 10;
 }
 
+message SolverInfo{
+  string solver_name = 1;
+  double ik_solve_cost = 2;
+  double fk_solve_cost = 3;
+  string debug_str = 4;
+}
+
+message DebugInfo{
+  repeated SolverInfo solver_info = 1;
+  string error_msg = 2;
+}
+
 enum BaselinkType {
     BASELINK_TYPE_UNSPECIFIED = 0;  // 默认值（proto3 要求 enum 从 0 开始）
     USE_BASELINK_AS_POSE = 1;      // 使用 base_link 作为机器人位姿
     IGNORE_BASELINK = 2;           // 忽略 base_link
+}
+
+message TargetMsg{
+  repeated RobotLinkInfo target_gripper_end_effort_links = 1;
+  repeated RobotJointInfo target_joints = 2;
 }
 
 message RobotInfo {
@@ -61,7 +78,7 @@ message RobotInfo {
 
   string frame_id = 2;
 
-  string name = 3;
+  string robot_name = 3;
 
   foxglove.Pose world_pose = 4;
 
@@ -78,4 +95,10 @@ message RobotInfo {
   RobotLinkInfo gripper_end_effort_link = 10;
 
   MPCData mpc_data = 11;
+
+  repeated RobotLinkInfo gripper_end_effort_links = 14;
+
+  DebugInfo debug_info = 15; // error msg
+
+  TargetMsg target_msg = 16;
 }

@@ -43,7 +43,4 @@ message StereoCalibration {
   repeated double T_b_c_left = 15; // length 7
 
   arnold.common.proto.Header header = 16;
-
-  // Sequence counter for this calibration message (pipeline default: 1).
-  uint32 sequence_num = 17 [json_name = "sequenceNum"];
 }
