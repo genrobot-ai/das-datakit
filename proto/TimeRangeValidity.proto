@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+import "header.proto";
+
+package foxglove;
+
+message ValidityRange {
+    double start_time_s = 1;
+    double end_time_s = 2;
+    bool is_valid = 3;
+    uint64 start_timestamp_ns = 4;
+    uint64 end_timestamp_ns = 5;
+}
+
+message InvalidRangeDetail {
+    double start_time_s = 1;
+    double end_time_s = 2;
+    uint64 start_timestamp_ns = 3;
+    uint64 end_timestamp_ns = 4;
+    // Stable machine-readable code; currently equals ValidityConstraint.source.
+    string invalid_code = 5;
+    // Human-readable cause, position, and related topics when available.
+    string invalid_message = 6;
+}
+
+message TimeRangeValidity {
+    arnold.common.proto.Header header = 1;
+    repeated ValidityRange ranges = 2;
+    repeated InvalidRangeDetail invalid_ranges = 3;
+}

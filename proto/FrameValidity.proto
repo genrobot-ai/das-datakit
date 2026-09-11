@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+import "header.proto";
+
+package foxglove;
+
+message FrameFailure {
+  string name = 1;
+  string message = 2;
+}
+
+message FrameValidity {
+  arnold.common.proto.Header header = 1;
+  string ref_topic = 2;
+  uint64 timestamp_ns = 3;
+  bool is_valid = 4;
+  repeated FrameFailure failures = 5;
+  uint32 frame_index = 6;
+}

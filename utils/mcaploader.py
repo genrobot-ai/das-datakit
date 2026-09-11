@@ -32,6 +32,10 @@ from pb2.CompressedImage_pb2 import CompressedImage
 from pb2.DepthInfo_pb2 import DepthInfo
 from pb2.PoseInFrame_pb2 import PoseInFrame
 from pb2.RobotInfo_pb2 import RobotInfo
+from pb2.HandTrackInfo_pb2 import HandPointFrameInfo
+from pb2.VideoAnnotationV2_pb2 import VideoAnnotationV2
+from pb2.TimeRangeValidity_pb2 import TimeRangeValidity
+from pb2.FrameValidity_pb2 import FrameValidity
 import pdb
 
 PROTO_MAPPING = {
@@ -75,16 +79,31 @@ PROTO_MAPPING = {
     "/robot0/sensor/camera5/camera_info": CameraCalibration,
 }
 
+SCHEMA_MAPPING = {
+    "foxglove.CompressedImage": CompressedImage,
+    "foxglove.CameraCalibration": CameraCalibration,
+    "foxglove.IMUMeasurement": IMUMeasurement,
+    "foxglove.PoseInFrame": PoseInFrame,
+    "foxglove.RobotInfo": RobotInfo,
+    "foxglove.SystemInfo": SystemInfo,
+    "foxglove.HandPointFrameInfo": HandPointFrameInfo,
+    "foxglove.VideoAnnotationV2": VideoAnnotationV2,
+    "foxglove.TimeRangeValidity": TimeRangeValidity,
+    "foxglove.FrameValidity": FrameValidity,
+}
+
 def ns_to_s(ns):
     return float(ns) / 1e9
 
 def parse_topic_data(reader: McapReader, topic: str):
-    if topic not in PROTO_MAPPING:
-        print(f"topic {topic} is not in PROTO_MAPPING.")
-        return []
-    proto_msg_class = PROTO_MAPPING[topic]
     topic_msgs = []
     for schema, channel, message in reader.iter_messages(topics=[topic]):
+        proto_msg_class = PROTO_MAPPING.get(topic) or SCHEMA_MAPPING.get(
+            schema.name if schema is not None else ""
+        )
+        if proto_msg_class is None:
+            print(f"unsupported protobuf schema {getattr(schema, 'name', None)} for topic {topic}")
+            continue
         proto_msg = proto_msg_class()
         proto_msg.ParseFromString(message.data)
         topic_msgs.append({

@@ -15,4 +15,5 @@ message Header {
   string topic_name = 4;
   double expect_hz = 5;
   repeated Input inputs = 6;
+  string version = 7;
 }

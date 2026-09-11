@@ -5,6 +5,16 @@ package foxglove;
 import "header.proto";
 
 message SystemInfo {
+  // Trigger that started this recording. Kept nested because it is only used by SystemInfo.
+  enum RecordingStartTrigger {
+    RECORDING_START_TRIGGER_UNSPECIFIED = 0;
+    RECORDING_START_TRIGGER_BUTTON = 1;
+    RECORDING_START_TRIGGER_FINGER_TRIPLE_CLICK = 2;
+    RECORDING_START_TRIGGER_BLUETOOTH = 3;
+    RECORDING_START_TRIGGER_RF_FOLLOWER = 4;
+    RECORDING_START_TRIGGER_GT = 5;
+  }
+
   arnold.common.proto.Header header = 1;
   string frame_id = 2;
   int64 pid = 3;
@@ -18,4 +28,8 @@ message SystemInfo {
   uint32 product_model_id = 11;
   string HardwareVersion = 12;
   string VersionName = 13;
+  string uuid = 14;
+  string aes_gcm_salt = 15;
+  RecordingStartTrigger recording_start_trigger = 16;
+  uint32 abnormal_reason = 17;
 }
