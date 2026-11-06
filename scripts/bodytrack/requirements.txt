@@ -1,0 +1,8 @@
+# Python 3.10+. All dependencies are available from the public Python Package Index.
+# Reads embedded MCAP protobuf descriptors; no generated pb2 files or model weights.
+av>=16.0.1,<18
+imageio-ffmpeg>=0.5.1,<1
+mcap>=1.2.2,<2
+mcap-protobuf-support>=0.5.3,<1
+numpy>=1.26.4,<3
+opencv-python-headless>=4.11,<5
