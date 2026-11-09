@@ -61,6 +61,42 @@ print(topic_data["decode_data"])
 
 ```
 
+### Project hand joints and surface to six cameras
+
+`scripts/project_hand_keypoints_to_mp4.py` renders the 21 joints from each
+`/robot0/handtracking/left` and `/robot0/handtracking/right` message into the
+six camera images and writes a 3x2 MP4 montage. It matches hand frames and
+`/robot0/vio/eef_pose` to camera frames by timestamp, then uses the standard
+`/robot0/sensor/cameraN/camera_info` calibration topics for projection. GT,
+`camera_mocap_info`, and other alternate calibration topics are not read.
+
+All six cameras may use the same calibration model, either `ds` or `ds-rt`
+(`ds-radtan` is also accepted). Mixed models across cameras are supported too.
+The distortion parameter vector `D` must match its model:
+
+- `ds`: 6 values, `[fx, fy, cx, cy, xi, alpha]`.
+- `ds-rt` / `ds-radtan`: 11 values, `[fx, fy, cx, cy, xi, alpha, k1, k2, k3, p1, p2]`.
+
+The video shows a 30%-tint semi-transparent surface with a fine 21-joint
+skeleton and small unnumbered keypoints on top. Wrist labels distinguish left
+and right. If a hand message has usable MANO parameters, the surface is the
+reconstructed MANO mesh aligned to its joints. If MANO parameters are absent,
+the script builds a small surface proxy from the 21 joints.
+
+Example:
+
+```shell
+/root/.venvs/ral/bin/python scripts/project_hand_keypoints_to_mp4.py \
+  --mcap /path/to/input.mcap \
+  --output /path/to/hand_projection.mp4 \
+  --max-frames 240 \
+  --fps 12
+```
+
+By default the script looks for the local `smooth_mano_param` MANO runtime in
+the workspace. Use `--mano-runtime-dir` or set `DAS_MANO_RUNTIME` when it is
+installed elsewhere. Use `--max-frames 0` to render all available frames.
+
 ### stereo depth sensor data
 
 Related topics:
